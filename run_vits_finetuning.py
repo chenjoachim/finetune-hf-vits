@@ -751,6 +751,8 @@ def main():
             if new_num_speakers > 1:
                 # align speaker_id to [0, num_speaker_id-1].
                 batch["speaker_id"] = speaker_id_dict.get(batch[speaker_id_column_name], 0)
+            else:
+                batch["speaker_id"] = 0
         return batch
 
     remove_columns = next(iter(raw_datasets.values())).column_names
