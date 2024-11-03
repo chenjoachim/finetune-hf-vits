@@ -599,9 +599,9 @@ def main():
         )
         print("Dataset columns:", raw_datasets["train"].column_names)
         print("Sample data:", raw_datasets["train"][0])
-        if speaker_id_column_name is not None:
-            print("Unique speaker IDs:", set(raw_datasets["train"][speaker_id_column_name]))
-            print("Speaker ID type:", type(raw_datasets["train"][0][speaker_id_column_name]))
+        # if speaker_id_column_name is not None:
+        #     print("Unique speaker IDs:", set(raw_datasets["train"][speaker_id_column_name]))
+        #     print("Speaker ID type:", type(raw_datasets["train"][0][speaker_id_column_name]))
 
     if training_args.do_eval:
         raw_datasets["eval"] = load_dataset(
