@@ -352,6 +352,7 @@ class DataCollatorTTSWithPadding:
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         # split inputs and labels since they have to be of different lengths and need
         # different padding methods
+        print(features[0].keys())
         model_input_name = "input_ids"
         input_ids = [{model_input_name: feature[model_input_name]} for feature in features]
 
