@@ -1,7 +1,3 @@
-"""
-Fine-tuning Vits for TTS.
-"""
-
 import logging
 import math
 import os
@@ -292,6 +288,14 @@ class DataTrainingArguments:
             )
         },
     )
+    gender_column_name: str = field(
+        default=None,
+        metadata={"help": "The name of the dataset column containing the gender information. Defaults to None"},
+    )
+    filter_on_gender: str = field(
+        default=None,
+        metadata={"help": "If set, filter dataset to keep only specified gender (e.g., 'female')"},
+    )
 
 # DATA COLLATOR
 
@@ -377,9 +381,7 @@ class DataCollatorTTSWithPadding:
         )["input_features"].transpose(1, 2)
 
         batch["mel_scaled_input_features"] = mel_scaled_input_features
-        batch["speaker_id"] = (
-            torch.tensor([feature["speaker_id"] for feature in features]) if "speaker_id" in features[0] else None
-        )
+        batch["speaker_id"] = torch.tensor([feature["speaker_id"] for feature in features], dtype=torch.long)
 
         return batch
 
@@ -595,6 +597,11 @@ def main():
             cache_dir=model_args.cache_dir,
             token=model_args.token,
         )
+        print("Dataset columns:", raw_datasets["train"].column_names)
+        print("Sample data:", raw_datasets["train"][0])
+        if speaker_id_column_name is not None:
+            print("Unique speaker IDs:", set(raw_datasets["train"][speaker_id_column_name]))
+            print("Speaker ID type:", type(raw_datasets["train"][0][speaker_id_column_name]))
 
     if training_args.do_eval:
         raw_datasets["eval"] = load_dataset(
@@ -626,6 +633,13 @@ def main():
         raise ValueError(
             f"--speaker_id_column_name {data_args.speaker_id_column_name} not found in dataset '{data_args.speaker_id_column_name}'. "
             "Make sure to set `--speaker_id_column_name` to the correct text column - one of "
+            f"{', '.join(next(iter(raw_datasets.values())).column_names)}."
+        )
+
+    if (data_args.gender_column_name is not None and data_args.gender_column_name not in next(iter(raw_datasets.values())).column_names):
+        raise ValueError(
+            f"--gender_column_name {data_args.gender_column_name} not found in dataset '{data_args.dataset_name}'. "
+            "Make sure to set `--gender_column_name` to the correct column - one of "
             f"{', '.join(next(iter(raw_datasets.values())).column_names)}."
         )
 
@@ -678,6 +692,8 @@ def main():
     do_lower_case = data_args.do_lower_case
     speaker_id_column_name = data_args.speaker_id_column_name
     filter_on_speaker_id = data_args.filter_on_speaker_id
+    gender_column_name = data_args.gender_column_name
+    filter_on_gender = data_args.filter_on_gender
     do_normalize = data_args.do_normalize
     is_uroman = tokenizer.is_uroman
     uroman_path = None
@@ -704,22 +720,24 @@ def main():
 
     speaker_id_dict = {}
     new_num_speakers = 0
+    if gender_column_name is not None and filter_on_gender is not None:
+        with training_args.main_process_first(desc="filter gender"):
+            raw_datasets["train"] = raw_datasets["train"].filter(
+                lambda gender: gender == data_args.filter_on_gender.lower(),
+                num_proc=num_workers,
+                input_columns=[gender_column_name],
+            )
+            logger.info(f"Filtered dataset to keep only {filter_on_gender} gender")
     if speaker_id_column_name is not None:
         if training_args.do_train:
-            # if filter_on_speaker_id, filter so that we keep only the speaker id
-            if filter_on_speaker_id is not None:
-                with training_args.main_process_first(desc="filter speaker id"):
-                    raw_datasets["train"] = raw_datasets["train"].filter(
-                        lambda speaker_id: (speaker_id == filter_on_speaker_id),
-                        num_proc=num_workers,
-                        input_columns=[speaker_id_column_name],
-                    )
-
             with training_args.main_process_first(desc="get speaker id dict"):
-                speaker_id_dict = {
-                    speaker_id: i for (i, speaker_id) in enumerate(set(raw_datasets["train"][speaker_id_column_name]))
-                }
+                # Create dictionary mapping string IDs to integers
+                unique_speakers = sorted(set(raw_datasets["train"][speaker_id_column_name]))
+                speaker_id_dict = {spk: idx for idx, spk in enumerate(unique_speakers)}
                 new_num_speakers = len(speaker_id_dict)
+                logger.info(f"Found {new_num_speakers} unique speakers after filtering")
+                logger.info(f"Speaker ID mapping: {speaker_id_dict}")
+
 
     def prepare_dataset(batch):
         # process target audio
@@ -735,7 +753,7 @@ def main():
 
         # process text inputs
         input_str = batch[text_column_name].lower() if do_lower_case else batch[text_column_name]
-        
+
         if is_uroman:
             input_str = uromanize(input_str, uroman_path=uroman_path)
         string_inputs = tokenizer(input_str, return_attention_mask=False)
@@ -747,10 +765,13 @@ def main():
 
         batch["mel_scaled_input_features"] = audio_inputs.get("mel_scaled_input_features")[0]
 
+        # Always set a speaker_id
         if speaker_id_column_name is not None:
-            if new_num_speakers > 1:
-                # align speaker_id to [0, num_speaker_id-1].
-                batch["speaker_id"] = speaker_id_dict.get(batch[speaker_id_column_name], 0)
+            original_id = batch[speaker_id_column_name]
+            batch["speaker_id"] = speaker_id_dict[original_id]  # Use direct mapping
+        else:
+            batch["speaker_id"] = 0
+
         return batch
 
     remove_columns = next(iter(raw_datasets.values())).column_names
@@ -809,7 +830,7 @@ def main():
         trust_remote_code=model_args.trust_remote_code,
     )
 
-    
+
     with training_args.main_process_first(desc="apply_weight_norm"):
         # apply weight norms
         model.decoder.apply_weight_norm()
